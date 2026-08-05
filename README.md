@@ -1,3 +1,5 @@
+![数学建模论文写作封面](assets/math-modeling-cover.png)
+
 # math-modeling-writing
 
 国赛数学建模写作技能：按全国大学生数学建模竞赛中文论文风格，分章节撰写论文草稿的 Codex 技能。
