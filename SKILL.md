@@ -58,3 +58,16 @@ description: 按国赛数学建模竞赛中文论文风格分章节撰写论文�
 - `references/sections/evaluation.md` — 模型评价章节模块（仅模型的优点/模型的缺点）
 - `references/sections/references.md` — 参考文献章节模块（GB/T 7714-2015 顺序编码制）
 - `references/sections/appendix.md` — 附录章节模块（核心代码、运行结果、补充推导与图表）
+
+## 阶段二：Markdown → Word（md2word）
+
+产出 `output/论文草稿.md` 后，如需转 Word（WPS 可打开），使用本技能内置的 `phase2-md2word` 模块：
+
+```bash
+python phase2-md2word/scripts/md2word.py output/论文草稿.md --out 论文草稿.docx
+python phase2-md2word/scripts/verify.py output/论文草稿.md 论文草稿.docx
+python phase2-md2word/scripts/qa_render_vision.py 论文草稿.docx
+powershell -ExecutionPolicy Bypass -File phase2-md2word/scripts/wps_check.ps1 论文草稿.docx
+```
+
+版面规则与 `references/typography.md` 一致：全文西文与数字统一 Times New Roman；表格基于无样式、宋体五号（内容过宽自动降小五号）、段前 0.5 行、段后 0、行距 1.5 倍；公式居中、无首行缩进、编号右对齐。首次运行前需引导 pandoc 依赖，详见 `phase2-md2word/SKILL.md`；测试语料在 `phase2-md2word/tests/`。
