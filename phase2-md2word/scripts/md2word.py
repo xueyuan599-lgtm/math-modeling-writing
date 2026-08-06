@@ -240,6 +240,21 @@ def define_guoshi_styles(doc: Document) -> None:
         set_spacing_lines(st, before, after)
         set_first_line_chars(st, indent_chars)
 
+    # 正文与摘要正文：段后 5 磅（100 twips）
+    for name in ("正文", "摘要正文"):
+        st = doc.styles[name]
+        ppr = st.element.get_or_add_pPr()
+        spacing = ppr.find(qn("w:spacing"))
+        if spacing is None:
+            spacing = OxmlElement("w:spacing")
+            ppr.append(spacing)
+        spacing.set(qn("w:beforeLines"), "0")
+        spacing.set(qn("w:before"), "0")
+        spacing.set(qn("w:afterLines"), "0")
+        spacing.set(qn("w:after"), "100")
+        spacing.set(qn("w:line"), "360")
+        spacing.set(qn("w:lineRule"), "auto")
+
     code = doc.styles["代码"]
     code.paragraph_format.line_spacing = 1.5
     ppr = code.element.get_or_add_pPr()
@@ -499,6 +514,11 @@ def _number_display_math(doc: Document, tags: list[dict], usable_width_dxa: int)
         if o_math is not None:
             o_math_para.addprevious(o_math)
             p_el.remove(o_math_para)
+        # 公式前插入制表符，配合居中制表位实现公式居中
+        lead_run = OxmlElement("w:r")
+        lead_tab = OxmlElement("w:tab")
+        lead_run.append(lead_tab)
+        o_math.addprevious(lead_run)
         ppr = p_el.find(qn("w:pPr"))
         if ppr is None:
             ppr = OxmlElement("w:pPr")
@@ -507,7 +527,7 @@ def _number_display_math(doc: Document, tags: list[dict], usable_width_dxa: int)
         if jc is None:
             jc = OxmlElement("w:jc")
             ppr.append(jc)
-        jc.set(qn("w:val"), "center")
+        jc.set(qn("w:val"), "left")
         ind = ppr.find(qn("w:ind"))
         if ind is None:
             ind = OxmlElement("w:ind")
@@ -518,6 +538,11 @@ def _number_display_math(doc: Document, tags: list[dict], usable_width_dxa: int)
         if tabs is None:
             tabs = OxmlElement("w:tabs")
             ppr.append(tabs)
+        mid = usable_width_dxa // 2
+        ctab = OxmlElement("w:tab")
+        ctab.set(qn("w:val"), "center")
+        ctab.set(qn("w:pos"), str(mid))
+        tabs.append(ctab)
         tab = OxmlElement("w:tab")
         tab.set(qn("w:val"), "right")
         tab.set(qn("w:pos"), str(usable_width_dxa))
@@ -530,6 +555,52 @@ def _number_display_math(doc: Document, tags: list[dict], usable_width_dxa: int)
             run.append(tab_run)
             run.append(t)
             p_el.append(run)
+
+
+def _normalize_display_math_layout(doc: Document, usable_width_dxa: int) -> None:
+    """兜底：确保显示公式段为“居中制表位+右制表位”结构，公式居中、编号右对齐。"""
+    body = doc.element.body
+    mid = usable_width_dxa // 2
+    for child in body.iter():
+        if child.tag != qn("w:p"):
+            continue
+        if child.find(qn("m:oMath")) is None:
+            continue
+        ppr = child.find(qn("w:pPr"))
+        if ppr is None:
+            continue
+        tabs = ppr.find(qn("w:tabs"))
+        has_right_tab = False
+        has_center_tab = False
+        if tabs is not None:
+            for tab in tabs.findall(qn("w:tab")):
+                val = tab.get(qn("w:val"))
+                if val == "right":
+                    has_right_tab = True
+                if val == "center":
+                    has_center_tab = True
+        if not has_right_tab:
+            continue
+        if tabs is None:
+            tabs = OxmlElement("w:tabs")
+            ppr.append(tabs)
+        if not has_center_tab:
+            ctab = OxmlElement("w:tab")
+            ctab.set(qn("w:val"), "center")
+            ctab.set(qn("w:pos"), str(mid))
+            tabs.insert(0, ctab)
+        o_math = child.find(qn("m:oMath"))
+        prev = o_math.getprevious()
+        if prev is None or prev.tag != qn("w:r") or prev.find(qn("w:tab")) is None:
+            lead_run = OxmlElement("w:r")
+            lead_tab = OxmlElement("w:tab")
+            lead_run.append(lead_tab)
+            o_math.addprevious(lead_run)
+        jc = ppr.find(qn("w:jc"))
+        if jc is None:
+            jc = OxmlElement("w:jc")
+            ppr.append(jc)
+        jc.set(qn("w:val"), "left")
 
 
 def _map_paragraph_styles(doc: Document, title: str | None,
@@ -558,6 +629,9 @@ def _map_paragraph_styles(doc: Document, title: str | None,
 
     # 标题角色判定
     heading_roles: dict[int, str] = {}
+    chapter_nums: dict[int, str] = {}
+    chapter_seq = 0
+    CN_NUMS = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十"]
     first_h1 = True
     in_abstract = False
     in_references = False
@@ -583,7 +657,8 @@ def _map_paragraph_styles(doc: Document, title: str | None,
         norm = normalize_heading(text)
 
         if pstyle and pstyle.startswith("Heading"):
-            level = int(pstyle.split()[-1]) if pstyle.split()[-1].isdigit() else 1
+            mlev = re.match(r"^Heading\s*(\d+)$", pstyle)
+            level = int(mlev.group(1)) if mlev else 1
             if norm == "摘要":
                 heading_roles[idx] = "摘要标题"
                 in_abstract = True
@@ -597,6 +672,9 @@ def _map_paragraph_styles(doc: Document, title: str | None,
                     heading_roles[idx] = "题目"
                 else:
                     heading_roles[idx] = "一级标题"
+                    if norm not in ("参考文献", "附录") and chapter_seq < len(CN_NUMS):
+                        chapter_nums[idx] = CN_NUMS[chapter_seq] + "、"
+                        chapter_seq += 1
                 first_h1 = False
                 in_abstract = False
                 in_references = False
@@ -656,6 +734,27 @@ def _map_paragraph_styles(doc: Document, title: str | None,
         else:
             _set_paragraph_props(par, role, doc=doc)
 
+        # 一级标题自动补中文数字编号（一、二、……），已有编号不重复
+        if role == "一级标题":
+            txt = (par.text or "").strip()
+            if idx in chapter_nums and not re.match(r"^[一二三四五六七八九十]+、", txt):
+                run = OxmlElement("w:r")
+                t = OxmlElement("w:t")
+                t.text = chapter_nums[idx]
+                run.append(t)
+                ppr = el.find(qn("w:pPr"))
+                if ppr is not None:
+                    ppr.addnext(run)
+                else:
+                    el.insert(0, run)
+            # 参考文献/附录一级标题不编号：去除源稿中已有的中文数字前缀
+            if normalize_heading(txt) in ("参考文献", "附录") and re.match(r"^[一二三四五六七八九十]+、", txt):
+                for r in el.iter(qn("w:r")):
+                    t = r.find(qn("w:t"))
+                    if t is not None and t.text:
+                        t.text = re.sub(r"^[一二三四五六七八九十]+、", "", t.text, count=1)
+                        break
+
         # 图片段落居中
         if el.find(".//" + qn("w:drawing")) is not None:
             par.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -707,6 +806,7 @@ def convert(md_path: Path, out_path: Path, title: str | None = None,
 
     _map_paragraph_styles(doc, title, usable_width_dxa)
     _number_display_math(doc, tags, usable_width_dxa)
+    _normalize_display_math_layout(doc, usable_width_dxa)
 
     doc.core_properties.title = title or md_path.stem
     doc.save(str(out_path))

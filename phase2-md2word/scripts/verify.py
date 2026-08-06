@@ -111,7 +111,7 @@ def extract_md_categories(md_text: str) -> dict:
             continue
         if stripped.startswith("|") and stripped.endswith("|"):
             cells = [c.strip() for c in stripped.strip("|").split("|")]
-            cats["table_cells"].extend(cells)
+            cats["table_cells"].extend([md_inline_to_text(c) for c in cells])
             continue
         img = re.match(r"^!\[([^\]]*)\]\(([^)]+)\)\s*$", stripped)
         if img:
@@ -158,8 +158,13 @@ def is_display_math_para(p_el) -> bool:
     ppr = p_el.find(qn("w:pPr"))
     if ppr is None:
         return False
-    jc = ppr.find(qn("w:jc"))
-    return jc is not None and jc.get(qn("w:val")) == "center"
+    tabs = ppr.find(qn("w:tabs"))
+    if tabs is None:
+        return False
+    for tab in tabs.findall(qn("w:tab")):
+        if tab.get(qn("w:val")) == "right":
+            return True
+    return False
 
 
 def extract_docx_categories(doc: Document) -> dict:
@@ -320,6 +325,32 @@ def main() -> int:
     nums = [t["number"] for t in tags if t["number"] is not None]
     if nums and nums != list(range(1, len(nums) + 1)):
         errors.append(f"公式编号不连续：{nums}")
+
+    # 公式布局审计：居中制表位 + 右制表位 + 公式前制表符
+    layout_issues = []
+    for child in doc.element.body.iterchildren():
+        if child.tag != qn("w:p"):
+            continue
+        if child.find(qn("m:oMath")) is None:
+            continue
+        ppr = child.find(qn("w:pPr"))
+        if ppr is None:
+            continue
+        tabs = ppr.find(qn("w:tabs"))
+        vals = [t.get(qn("w:val")) for t in tabs.findall(qn("w:tab"))] if tabs is not None else []
+        if "right" not in vals:
+            continue
+        if "center" not in vals:
+            layout_issues.append("缺少居中制表位")
+        omath = child.find(qn("m:oMath"))
+        prev = omath.getprevious()
+        if prev is None or prev.tag != qn("w:r") or prev.find(qn("w:tab")) is None:
+            layout_issues.append("缺少公式前制表符")
+    if layout_issues:
+        errors.append(
+            "显示公式布局不满足约束（居中制表位/公式前制表符）："
+            + "；".join(sorted(set(layout_issues)))
+        )
 
     # 结构审计
     errors += audit_docx(doc)
